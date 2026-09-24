@@ -70,7 +70,7 @@ struct DirectDomainsEditor: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             Form {
                 Section("Напрямую без VPN") {
                     TextEditor(text: $text)
