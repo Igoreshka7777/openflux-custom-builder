@@ -1,0 +1,7 @@
+1) Распакуй ZIP.
+2) Создай пустой GitHub-репозиторий.
+3) Загрузи ВСЕ файлы, включая скрытую папку .github.
+4) GitHub -> Actions -> Build OpenFlux Custom unsigned IPA -> Run workflow.
+5) После зелёной галочки скачай Artifact OpenFlux-Custom-unsigned.
+
+Сертификат в этот builder загружать НЕ нужно: сборка специально неподписанная.
