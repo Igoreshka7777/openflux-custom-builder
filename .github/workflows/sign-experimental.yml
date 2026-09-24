@@ -1,4 +1,4 @@
-name: Sign OpenFlux experimental
+name: Sign Igor VPN experimental
 
 on:
   workflow_dispatch:
@@ -31,9 +31,19 @@ jobs:
         run: |
           brew install xcodegen
 
-      - name: Apply custom direct-domain patch
+      - name: Apply OpenFlux direct-domain patch
         run: |
           python3 patch_openflux.py OpenFlux
+
+      - name: Apply Igor VPN customization
+        run: |
+          python3 patch_igorvpn.py
+
+          echo "Checking custom files..."
+          test -f app-icon.png
+          test -f OpenFlux/ios-app/OpenFlux/SupportView.swift
+
+          echo "Igor VPN customization applied"
 
       - name: Build OpenFlux Go library for iOS
         working-directory: OpenFlux
@@ -102,8 +112,8 @@ jobs:
         env:
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
         run: |
-          KEYCHAIN="$RUNNER_TEMP/openflux.keychain-db"
-          KEYCHAIN_PASSWORD="openflux-actions"
+          KEYCHAIN="$RUNNER_TEMP/igorvpn.keychain-db"
+          KEYCHAIN_PASSWORD="igorvpn-actions"
 
           brew install openssl@3 || true
           OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
@@ -167,6 +177,7 @@ jobs:
           fi
 
           echo "Using signing identity: $IDENTITY"
+
           echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
@@ -291,6 +302,13 @@ jobs:
             -c "Set :CFBundleIdentifier $EXT_BUNDLE" \
             "$EXT/Info.plist"
 
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleDisplayName Igor VPN" \
+            "$APP/Info.plist" || \
+          /usr/libexec/PlistBuddy \
+            -c "Add :CFBundleDisplayName string 'Igor VPN'" \
+            "$APP/Info.plist"
+
           cp ../../signing/profile.mobileprovision \
             "$APP/embedded.mobileprovision"
 
@@ -302,6 +320,27 @@ jobs:
 
           echo "EXT_PATH=OpenFlux/ios-app/$EXT" \
             >> "$GITHUB_ENV"
+
+      - name: Verify Igor VPN branding
+        run: |
+          echo "Checking display name..."
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleDisplayName" \
+            "$APP_PATH/Info.plist" || true
+
+          echo "Checking app icon files..."
+
+          find "$APP_PATH" \
+            -iname '*AppIcon*' \
+            -o -iname '*60x60*' \
+            | head -50 || true
+
+          echo "Checking SupportView source..."
+
+          test -f OpenFlux/ios-app/OpenFlux/SupportView.swift
+
+          echo "Branding check complete"
 
       - name: Sign tunnel extension
         run: |
@@ -321,6 +360,7 @@ jobs:
             "$EXT_PATH"
 
           echo "Tunnel signature:"
+
           /usr/bin/codesign \
             -d \
             --verbose=4 \
@@ -399,26 +439,26 @@ jobs:
 
           /usr/bin/zip \
             -qry \
-            ../OpenFlux-Custom-signed-experimental.ipa \
+            ../Igor-VPN-signed-experimental.ipa \
             Payload
 
           cd ..
 
           shasum \
             -a 256 \
-            OpenFlux-Custom-signed-experimental.ipa \
-            > OpenFlux-Custom-signed-experimental.ipa.sha256
+            Igor-VPN-signed-experimental.ipa \
+            > Igor-VPN-signed-experimental.ipa.sha256
 
           ls -lh \
-            OpenFlux-Custom-signed-experimental.ipa
+            Igor-VPN-signed-experimental.ipa
 
-      - name: Upload signed IPA
+      - name: Upload Igor VPN IPA
         uses: actions/upload-artifact@v6
         with:
-          name: OpenFlux-Custom-signed-experimental
+          name: Igor-VPN-signed-experimental
           path: |
-            OpenFlux-Custom-signed-experimental.ipa
-            OpenFlux-Custom-signed-experimental.ipa.sha256
+            Igor-VPN-signed-experimental.ipa
+            Igor-VPN-signed-experimental.ipa.sha256
           if-no-files-found: error
           retention-days: 30
 
