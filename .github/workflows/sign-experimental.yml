@@ -13,10 +13,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Checkout OpenFlux upstream
-        run: git clone --depth 1 https://github.com/p1neappleXpress/OpenFlux.git OpenFlux
+        run: |
+          git clone --depth 1 https://github.com/p1neappleXpress/OpenFlux.git OpenFlux
 
       - name: Select Xcode 26.6
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version
 
       - name: Setup Go 1.26
         uses: actions/setup-go@v6
@@ -25,21 +28,29 @@ jobs:
           cache-dependency-path: OpenFlux/go.sum
 
       - name: Install XcodeGen
-        run: brew install xcodegen
+        run: |
+          brew install xcodegen
 
       - name: Apply custom direct-domain patch
-        run: python3 patch_openflux.py OpenFlux
+        run: |
+          python3 patch_openflux.py OpenFlux
 
       - name: Build OpenFlux Go library for iOS
         working-directory: OpenFlux
-        run: ./build_ios.sh
+        run: |
+          ./build_ios.sh
 
       - name: Generate Xcode project
         working-directory: OpenFlux
         run: |
           mkdir -p ios-app/Lib
-          cp output/ios/liboflux.a ios-app/Lib/liboflux.a
-          cp output/ios/liboflux.h ios-app/Lib/liboflux.h
+
+          cp output/ios/liboflux.a \
+            ios-app/Lib/liboflux.a
+
+          cp output/ios/liboflux.h \
+            ios-app/Lib/liboflux.h
+
           cd ios-app
           xcodegen generate
 
@@ -47,6 +58,7 @@ jobs:
         working-directory: OpenFlux/ios-app
         run: |
           rm -rf build/DerivedData
+
           xcodebuild \
             -project OpenFlux.xcodeproj \
             -scheme OpenFlux \
@@ -66,17 +78,22 @@ jobs:
         run: |
           mkdir -p signing
 
-          echo "$P12_BASE64" | base64 --decode > signing/certificate.p12
-          echo "$PROFILE_BASE64" | base64 --decode > signing/profile.mobileprovision
+          echo "$P12_BASE64" | base64 --decode \
+            > signing/certificate.p12
+
+          echo "$PROFILE_BASE64" | base64 --decode \
+            > signing/profile.mobileprovision
 
           security cms -D \
             -i signing/profile.mobileprovision \
             > signing/profile.plist
 
+          echo "Provisioning profile:"
           /usr/libexec/PlistBuddy \
             -c "Print :Name" \
             signing/profile.plist || true
 
+          echo "Expiration:"
           /usr/libexec/PlistBuddy \
             -c "Print :ExpirationDate" \
             signing/profile.plist || true
@@ -91,7 +108,7 @@ jobs:
           brew install openssl@3 || true
           OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
 
-          echo "Converting P12..."
+          echo "Converting P12 for macOS Keychain..."
 
           "$OPENSSL" pkcs12 \
             -legacy \
@@ -119,7 +136,8 @@ jobs:
             -p "$KEYCHAIN_PASSWORD" \
             "$KEYCHAIN"
 
-          security import signing/certificate-macos.p12 \
+          security import \
+            signing/certificate-macos.p12 \
             -k "$KEYCHAIN" \
             -P "$P12_PASSWORD" \
             -A
@@ -134,6 +152,8 @@ jobs:
             -d user \
             -s "$KEYCHAIN"
 
+          echo "Available signing identities:"
+
           security find-identity \
             -v \
             -p codesigning \
@@ -146,7 +166,9 @@ jobs:
             exit 1
           fi
 
+          echo "Using signing identity: $IDENTITY"
           echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          echo "SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
       - name: Prepare bundle identifiers and entitlements
         run: |
@@ -159,7 +181,7 @@ jobs:
           with open(root / "profile.plist", "rb") as f:
               profile = plistlib.load(f)
 
-          ent = profile["Entitlements"]
+          ent = dict(profile["Entitlements"])
 
           team = (
               ent.get("com.apple.developer.team-identifier")
@@ -169,6 +191,7 @@ jobs:
           app_identifier = ent["application-identifier"]
 
           prefix = team + "."
+
           if app_identifier.startswith(prefix):
               bundle = app_identifier[len(prefix):]
           else:
@@ -184,46 +207,67 @@ jobs:
           )
 
           if "keychain-access-groups" in tunnel_ent:
-              groups = []
+              new_groups = []
 
               for group in tunnel_ent["keychain-access-groups"]:
                   if group == app_identifier:
-                      groups.append(
+                      new_groups.append(
                           team + "." + tunnel_bundle
                       )
                   else:
-                      groups.append(group)
+                      new_groups.append(group)
 
-              tunnel_ent["keychain-access-groups"] = groups
+              tunnel_ent["keychain-access-groups"] = new_groups
 
-          with open(root / "app-entitlements.plist", "wb") as f:
+          with open(
+              root / "app-entitlements.plist",
+              "wb"
+          ) as f:
               plistlib.dump(app_ent, f)
 
-          with open(root / "tunnel-entitlements.plist", "wb") as f:
+          with open(
+              root / "tunnel-entitlements.plist",
+              "wb"
+          ) as f:
               plistlib.dump(tunnel_ent, f)
 
-          Path(root / "bundle-id.txt").write_text(bundle)
-          Path(root / "tunnel-bundle-id.txt").write_text(
+          (root / "bundle-id.txt").write_text(bundle)
+
+          (root / "tunnel-bundle-id.txt").write_text(
               tunnel_bundle
           )
 
-          print("Main bundle:", bundle)
-          print("Tunnel bundle:", tunnel_bundle)
-          print("Team:", team)
+          print("MAIN BUNDLE ID:")
+          print(bundle)
+
+          print("TUNNEL BUNDLE ID:")
+          print(tunnel_bundle)
+
+          print("TEAM:")
+          print(team)
+
+          print("PROFILE APPLICATION IDENTIFIER:")
+          print(app_identifier)
           PY
 
       - name: Prepare app for signing
         working-directory: OpenFlux/ios-app
         run: |
-          APP="$(find build/DerivedData/Build/Products/Release-iphoneos \
-            -maxdepth 1 -type d -name 'OpenFlux.app' -print -quit)"
+          PRODUCTS="build/DerivedData/Build/Products/Release-iphoneos"
 
-          if [ -z "$APP" ]; then
+          APP="$PRODUCTS/OpenFlux.app"
+          EXT="$PRODUCTS/OpenFluxTunnel.appex"
+
+          echo "Products:"
+          find "$PRODUCTS" \
+            -maxdepth 2 \
+            -type d \
+            -print
+
+          if [ ! -d "$APP" ]; then
             echo "OpenFlux.app not found"
             exit 1
           fi
-
-          EXT="$APP/PlugIns/OpenFluxTunnel.appex"
 
           if [ ! -d "$EXT" ]; then
             echo "OpenFluxTunnel.appex not found"
@@ -232,6 +276,12 @@ jobs:
 
           APP_BUNDLE="$(cat ../../signing/bundle-id.txt)"
           EXT_BUNDLE="$(cat ../../signing/tunnel-bundle-id.txt)"
+
+          echo "Changing main Bundle ID to:"
+          echo "$APP_BUNDLE"
+
+          echo "Changing tunnel Bundle ID to:"
+          echo "$EXT_BUNDLE"
 
           /usr/libexec/PlistBuddy \
             -c "Set :CFBundleIdentifier $APP_BUNDLE" \
@@ -247,61 +297,120 @@ jobs:
           cp ../../signing/profile.mobileprovision \
             "$EXT/embedded.mobileprovision"
 
-          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
-          echo "EXT_PATH=$EXT" >> "$GITHUB_ENV"
+          echo "APP_PATH=OpenFlux/ios-app/$APP" \
+            >> "$GITHUB_ENV"
+
+          echo "EXT_PATH=OpenFlux/ios-app/$EXT" \
+            >> "$GITHUB_ENV"
 
       - name: Sign tunnel extension
         run: |
+          echo "Signing:"
+          echo "$EXT_PATH"
+
+          codesign \
+            --remove-signature \
+            "$EXT_PATH" 2>/dev/null || true
+
           /usr/bin/codesign \
             --force \
             --sign "$SIGN_IDENTITY" \
+            --keychain "$SIGN_KEYCHAIN" \
             --entitlements signing/tunnel-entitlements.plist \
             --timestamp=none \
             "$EXT_PATH"
 
+          echo "Tunnel signature:"
           /usr/bin/codesign \
             -d \
+            --verbose=4 \
             --entitlements :- \
             "$EXT_PATH"
 
+          mkdir -p "$APP_PATH/PlugIns"
+
+          rm -rf \
+            "$APP_PATH/PlugIns/OpenFluxTunnel.appex"
+
+          cp -R \
+            "$EXT_PATH" \
+            "$APP_PATH/PlugIns/OpenFluxTunnel.appex"
+
       - name: Sign main app
         run: |
+          echo "Signing:"
+          echo "$APP_PATH"
+
+          codesign \
+            --remove-signature \
+            "$APP_PATH" 2>/dev/null || true
+
           /usr/bin/codesign \
             --force \
             --sign "$SIGN_IDENTITY" \
+            --keychain "$SIGN_KEYCHAIN" \
             --entitlements signing/app-entitlements.plist \
             --timestamp=none \
             "$APP_PATH"
 
+          echo "Main app signature:"
+
           /usr/bin/codesign \
             -d \
+            --verbose=4 \
             --entitlements :- \
             "$APP_PATH"
 
       - name: Verify signatures
         run: |
-          codesign --verify --verbose=4 "$EXT_PATH"
-          codesign --verify --verbose=4 "$APP_PATH"
+          echo "Checking embedded extension..."
+
+          EMBEDDED_EXT="$APP_PATH/PlugIns/OpenFluxTunnel.appex"
+
+          if [ ! -d "$EMBEDDED_EXT" ]; then
+            echo "Embedded OpenFluxTunnel.appex is missing"
+            exit 1
+          fi
+
+          /usr/bin/codesign \
+            --verify \
+            --verbose=4 \
+            "$EMBEDDED_EXT"
+
+          /usr/bin/codesign \
+            --verify \
+            --verbose=4 \
+            "$APP_PATH"
+
+          echo "Signatures OK"
 
       - name: Package signed IPA
         run: |
           rm -rf SignedPayload
-          mkdir -p SignedPayload/Payload
 
-          cp -R "$APP_PATH" \
+          mkdir -p \
+            SignedPayload/Payload
+
+          cp -R \
+            "$APP_PATH" \
             SignedPayload/Payload/OpenFlux.app
 
           cd SignedPayload
 
-          /usr/bin/zip -qry \
+          /usr/bin/zip \
+            -qry \
             ../OpenFlux-Custom-signed-experimental.ipa \
             Payload
 
           cd ..
 
-          shasum -a 256 \
+          shasum \
+            -a 256 \
             OpenFlux-Custom-signed-experimental.ipa \
             > OpenFlux-Custom-signed-experimental.ipa.sha256
+
+          ls -lh \
+            OpenFlux-Custom-signed-experimental.ipa
 
       - name: Upload signed IPA
         uses: actions/upload-artifact@v6
@@ -312,3 +421,11 @@ jobs:
             OpenFlux-Custom-signed-experimental.ipa.sha256
           if-no-files-found: error
           retention-days: 30
+
+      - name: Cleanup keychain
+        if: always()
+        run: |
+          if [ -n "${SIGN_KEYCHAIN:-}" ]; then
+            security delete-keychain \
+              "$SIGN_KEYCHAIN" || true
+          fi
