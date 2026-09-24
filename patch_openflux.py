@@ -211,7 +211,7 @@ if "OPENFLUX_CUSTOM_DIRECT_DOMAINS" not in pt:
         var hints = addrinfo()
         hints.ai_flags = AI_ADDRCONFIG
         hints.ai_family = AF_INET
-        hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+        hints.ai_socktype = SOCK_STREAM
         hints.ai_protocol = IPPROTO_TCP
 
         var result: UnsafeMutablePointer<addrinfo>?
