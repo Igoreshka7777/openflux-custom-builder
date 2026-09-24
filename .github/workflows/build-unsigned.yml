@@ -32,6 +32,86 @@ jobs:
         run: brew install xcodegen
 
       - name: Apply custom direct-domain patch
+            - name: Apply custom app icon
+        working-directory: OpenFlux/ios-app
+        run: |
+          ICON_SRC="$GITHUB_WORKSPACE/app-icon.png"
+
+          if [ ! -f "$ICON_SRC" ]; then
+            echo "app-icon.png not found in repository root"
+            exit 1
+          fi
+
+          ASSETS_DIR="$(find . -type d -name Assets.xcassets | head -n 1)"
+
+          if [ -z "$ASSETS_DIR" ]; then
+            echo "Assets.xcassets not found"
+            exit 1
+          fi
+
+          APPICON_DIR="$ASSETS_DIR/AppIcon.appiconset"
+
+          rm -rf "$APPICON_DIR"
+          mkdir -p "$APPICON_DIR"
+
+          resize() {
+            local size="$1"
+            local output="$2"
+            sips -z "$size" "$size" "$ICON_SRC" --out "$APPICON_DIR/$output" >/dev/null
+          }
+
+          resize 40 Icon-20@2x.png
+          resize 60 Icon-20@3x.png
+          resize 58 Icon-29@2x.png
+          resize 87 Icon-29@3x.png
+          resize 80 Icon-40@2x.png
+          resize 120 Icon-40@3x.png
+          resize 120 Icon-60@2x.png
+          resize 180 Icon-60@3x.png
+
+          resize 20 Icon-20@1x-ipad.png
+          resize 40 Icon-20@2x-ipad.png
+          resize 29 Icon-29@1x-ipad.png
+          resize 58 Icon-29@2x-ipad.png
+          resize 40 Icon-40@1x-ipad.png
+          resize 80 Icon-40@2x-ipad.png
+          resize 76 Icon-76@1x.png
+          resize 152 Icon-76@2x.png
+          resize 167 Icon-83.5@2x.png
+          resize 1024 Icon-1024@1x.png
+
+          cat > "$APPICON_DIR/Contents.json" <<'JSON'
+          {
+            "images" : [
+              { "idiom" : "iphone", "size" : "20x20", "scale" : "2x", "filename" : "Icon-20@2x.png" },
+              { "idiom" : "iphone", "size" : "20x20", "scale" : "3x", "filename" : "Icon-20@3x.png" },
+              { "idiom" : "iphone", "size" : "29x29", "scale" : "2x", "filename" : "Icon-29@2x.png" },
+              { "idiom" : "iphone", "size" : "29x29", "scale" : "3x", "filename" : "Icon-29@3x.png" },
+              { "idiom" : "iphone", "size" : "40x40", "scale" : "2x", "filename" : "Icon-40@2x.png" },
+              { "idiom" : "iphone", "size" : "40x40", "scale" : "3x", "filename" : "Icon-40@3x.png" },
+              { "idiom" : "iphone", "size" : "60x60", "scale" : "2x", "filename" : "Icon-60@2x.png" },
+              { "idiom" : "iphone", "size" : "60x60", "scale" : "3x", "filename" : "Icon-60@3x.png" },
+
+              { "idiom" : "ipad", "size" : "20x20", "scale" : "1x", "filename" : "Icon-20@1x-ipad.png" },
+              { "idiom" : "ipad", "size" : "20x20", "scale" : "2x", "filename" : "Icon-20@2x-ipad.png" },
+              { "idiom" : "ipad", "size" : "29x29", "scale" : "1x", "filename" : "Icon-29@1x-ipad.png" },
+              { "idiom" : "ipad", "size" : "29x29", "scale" : "2x", "filename" : "Icon-29@2x-ipad.png" },
+              { "idiom" : "ipad", "size" : "40x40", "scale" : "1x", "filename" : "Icon-40@1x-ipad.png" },
+              { "idiom" : "ipad", "size" : "40x40", "scale" : "2x", "filename" : "Icon-40@2x-ipad.png" },
+              { "idiom" : "ipad", "size" : "76x76", "scale" : "1x", "filename" : "Icon-76@1x.png" },
+              { "idiom" : "ipad", "size" : "76x76", "scale" : "2x", "filename" : "Icon-76@2x.png" },
+              { "idiom" : "ipad", "size" : "83.5x83.5", "scale" : "2x", "filename" : "Icon-83.5@2x.png" },
+
+              { "idiom" : "ios-marketing", "size" : "1024x1024", "scale" : "1x", "filename" : "Icon-1024@1x.png" }
+            ],
+            "info" : {
+              "version" : 1,
+              "author" : "xcode"
+            }
+          }
+          JSON
+
+          echo "Custom icon applied to: $APPICON_DIR"
         run: python3 patch_openflux.py OpenFlux
 
       - name: Build OpenFlux Go library for iOS
