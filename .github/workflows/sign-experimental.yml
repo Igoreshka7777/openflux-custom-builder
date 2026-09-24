@@ -75,48 +75,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Print :Name" signing/profile.plist || true
           /usr/libexec/PlistBuddy -c "Print :ExpirationDate" signing/profile.plist || true
 
-      - name: Import signing certificate
-        env:
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-        run: |
-          KEYCHAIN="$RUNNER_TEMP/openflux.keychain-db"
-          KEYCHAIN_PASSWORD="openflux-actions"
-
-          security create-keychain \
-            -p "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN"
-
-          security set-keychain-settings \
-            -lut 21600 \
-            "$KEYCHAIN"
-
-          security unlock-keychain \
-            -p "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN"
-
-          security import signing/certificate.p12 \
-            -k "$KEYCHAIN" \
-            -P "$P12_PASSWORD" \
-            -A \
-            -t cert \
-            -f pkcs12
-
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN"
-
-          security list-keychains -d user -s "$KEYCHAIN"
-
-          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk 'NR==1 {print $2}')"
-
-          if [ -z "$IDENTITY" ]; then
-            echo "Signing identity not found"
-            exit 1
-          fi
-
-          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+      
 
       - name: Prepare bundle identifiers and entitlements
         run: |
@@ -153,7 +112,73 @@ jobs:
           tunnel_ent["application-identifier"] = (
               team + "." + tunnel_bundle
           )
+  - name: Import signing certificate
+    env:
+      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+    run: |
+      KEYCHAIN="$RUNNER_TEMP/openflux.keychain-db"
+      KEYCHAIN_PASSWORD="openflux-actions"
 
+      brew install openssl@3 || true
+      OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+
+      echo "Converting P12 for macOS Keychain..."
+
+      "$OPENSSL" pkcs12 \
+        -in signing/certificate.p12 \
+        -passin pass:"$P12_PASSWORD" \
+        -nodes \
+        -out signing/certificate.pem
+
+      "$OPENSSL" pkcs12 \
+        -export \
+        -legacy \
+        -in signing/certificate.pem \
+        -out signing/certificate-macos.p12 \
+        -passout pass:"$P12_PASSWORD"
+
+      security create-keychain \
+        -p "$KEYCHAIN_PASSWORD" \
+        "$KEYCHAIN"
+
+      security set-keychain-settings \
+        -lut 21600 \
+        "$KEYCHAIN"
+
+      security unlock-keychain \
+        -p "$KEYCHAIN_PASSWORD" \
+        "$KEYCHAIN"
+
+      security import signing/certificate-macos.p12 \
+        -k "$KEYCHAIN" \
+        -P "$P12_PASSWORD" \
+        -A
+
+      security set-key-partition-list \
+        -S apple-tool:,apple:,codesign: \
+        -s \
+        -k "$KEYCHAIN_PASSWORD" \
+        "$KEYCHAIN"
+
+      security list-keychains \
+        -d user \
+        -s "$KEYCHAIN"
+
+      echo "Available signing identities:"
+      security find-identity \
+        -v \
+        -p codesigning \
+        "$KEYCHAIN"
+
+      IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk 'NR==1 {print $2}')"
+
+      if [ -z "$IDENTITY" ]; then
+        echo "Signing identity not found"
+        exit 1
+      fi
+
+      echo "Using signing identity: $IDENTITY"
+      echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           if "keychain-access-groups" in tunnel_ent:
               groups = []
 
