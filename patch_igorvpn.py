@@ -414,37 +414,44 @@ VPN_HEADER = '''private var statusHeader: some View {
     }'''
 
 
-def restore_logs_and_center_status(text: str, project: Path) -> str:
-    """Keep the original logs UI; recover it from git if an old patch erased it."""
-    pattern = r'\bprivate\s+var\s+logView\s*:\s*some\s+View\s*\{'
-    m = re.search(pattern, text)
-    if not m:
-        fail("Не найден раздел логов в ContentView.swift")
-    end = matching_brace(text, text.find('{', m.start(), m.end())) + 1
-    current = text[m.start():end]
-    if 'Text("VPN: \\(vpn.status)")' in current and 'Verbose log' not in current and 'Text("Logs")' not in current and 'Text("Лог")' not in current:
-        try:
-            original = subprocess.check_output(
-                ["git", "show", "HEAD:ios-app/OpenFlux/ContentView.swift"],
-                cwd=project, text=True, stderr=subprocess.DEVNULL,
-            )
-        except (OSError, subprocess.CalledProcessError):
-            fail("Логи уже удалены предыдущим патчем, а исходный ContentView.swift в git недоступен")
-        old = re.search(pattern, original)
-        if not old:
-            fail("В исходном ContentView.swift не найден прежний раздел логов")
-        old_end = matching_brace(original, original.find('{', old.start(), old.end())) + 1
-        current = original[old.start():old_end]
-    if 'igorCenteredVPNStatus' not in current:
-        start = re.search(r'\bVStack\s*(?:\([^{}]*\))?\s*\{', current)
-        if not start:
-            fail("Не найдена точка вставки статуса в разделе логов")
-        current = (current[:start.end()] + '''
+VPN_LOG = '''private var logView: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text("VPN: \\(vpn.status)")
                 .font(.footnote)
-                .frame(maxWidth: .infinity, alignment: .center) // igorCenteredVPNStatus
-''' + current[start.end():])
-    return text[:m.start()] + current + text[end:]
+                .frame(maxWidth: .infinity, alignment: .center)
+            HStack {
+                Text("Логи VPN").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button { vpn.refreshLog() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .accessibilityLabel("Обновить логи")
+                Button { UIPasteboard.general.string = vpn.log } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .accessibilityLabel("Скопировать логи")
+            }
+            ScrollViewReader { reader in
+                ScrollView {
+                    Text(vpn.log.isEmpty ? "Ожидание событий VPN…" : vpn.log)
+                        .font(.system(.caption2, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .id("vpnLogTail")
+                }
+                .onChange(of: vpn.log) { _ in
+                    reader.scrollTo("vpnLogTail", anchor: .bottom)
+                }
+            }
+            .frame(height: 220)
+            .padding(8)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            vpn.refreshLog()
+        }
+    }'''
 
 
 VPN_TEST = '''
@@ -524,15 +531,11 @@ def patch_content_view(path: Path) -> None:
     # The visible Start button controls the actual iOS packet tunnel.
     text = replace_swift_property(text, "controls", VPN_CONTROLS)
     text = replace_swift_property(text, "statusHeader", VPN_HEADER)
-    text = restore_logs_and_center_status(text, path.parents[2])
-    # The original log view may read from TunnelController. Keep its state
-    # object even though the old start controls are gone.
-    log_match = re.search(r'\bprivate\s+var\s+logView\s*:\s*some\s+View\s*\{', text)
-    log_end = matching_brace(text, text.find('{', log_match.start(), log_match.end()))
-    if (re.search(r'\btunnel\.', text[log_match.start():log_end])
-            and not re.search(r'@StateObject\s+private\s+var\s+tunnel\s*=', text)):
-        decl = re.search(r'\bstruct\s+ContentView\s*:\s*View\s*\{', text)
-        text = text[:decl.end()] + '\n    @StateObject private var tunnel = TunnelController()\n' + text[decl.end():]
+    text = replace_swift_property(text, "logView", VPN_LOG)
+    if 'import UIKit' not in text:
+        text = text.replace('import SwiftUI', 'import SwiftUI\nimport UIKit', 1)
+    if 'import Combine' not in text:
+        text = text.replace('import SwiftUI', 'import SwiftUI\nimport Combine', 1)
     if re.search(r'\bprivate\s+var\s+portField\s*:\s*some\s+View\s*\{', text):
         text = replace_swift_property(text, "portField", '')
     text = re.sub(r'^\s*portField\s*\n', '', text, flags=re.M)
@@ -869,6 +872,40 @@ def patch_packet_tunnel(path: Path) -> None:
         text = text.replace(marker, marker +
                             '                NSLog("[Igor VPN] tunnel start failed, code=\\(rc)")\n', 1)
 
+    if 'override func handleAppMessage(' not in text:
+        cls = re.search(r'class\s+PacketTunnelProvider\s*:\s*NEPacketTunnelProvider\s*\{', text)
+        if not cls:
+            fail("Не найден класс VPN-расширения для передачи логов")
+        ipc = r'''
+    private var routeSummary = ""
+    private var routeSummaryDelivered = false
+
+    override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        guard String(data: messageData, encoding: .utf8) == "logs" else {
+            completionHandler?(nil)
+            return
+        }
+        var lines = ""
+        if !routeSummaryDelivered && !routeSummary.isEmpty {
+            lines = routeSummary
+            routeSummaryDelivered = true
+        }
+        if let ptr = OpenFluxReadLog() {
+            let goLog = String(cString: ptr)
+            OpenFluxFreeString(ptr)
+            if !goLog.isEmpty {
+                if !lines.isEmpty { lines += "\n" }
+                lines += goLog
+            }
+        }
+        completionHandler?(Data(lines.utf8))
+    }
+'''
+        text = text[:cls.end()] + ipc + text[cls.end():]
+    if 'routeSummary = "Прямых IP-маршрутов:' not in text:
+        marker = 'ipv4.excludedRoutes = Self.bypassRoutes(directDomains: igorDirectDomains)'
+        text = text.replace(marker, marker + '\n        routeSummary = "Прямых IP-маршрутов: \\(ipv4.excludedRoutes?.count ?? 0)"', 1)
+
     path.write_text(text, encoding="utf-8")
     print("OK PacketTunnelProvider:", path)
 
@@ -979,6 +1016,45 @@ def force_mailru_in_vpn_controller(path: Path) -> None:
         text = text.replace(old_stop, new_stop, 1)
     elif 'm.isOnDemandEnabled = false' not in text:
         fail("Не найден VPNController.stop для ручного отключения")
+    if 'func refreshLog()' not in text:
+        text, count = re.subn(
+            r'@Published\s+var\s+status\s*:\s*String\s*=\s*"Disconnected"',
+            lambda _m: '''@Published var status: String = "Disconnected" {
+        didSet {
+            if status != oldValue { appendDiagnostic("Статус: \\(status)") }
+        }
+    }''', text, count=1,
+        )
+        if count != 1:
+            fail("Не найден статус в VPNController.swift для журнала")
+        marker = 'private var manager: NETunnelProviderManager?'
+        if marker not in text:
+            fail("Не найден VPN manager для чтения логов расширения")
+        diagnostics = r'''
+    @Published private(set) var log = UserDefaults.standard.string(forKey: "igorVPNLog") ?? ""
+
+    private func appendDiagnostic(_ message: String) {
+        let stamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
+        log += "\n[\(stamp)] \(message)"
+        if log.count > 16000 { log = String(log.suffix(16000)) }
+        UserDefaults.standard.set(log, forKey: "igorVPNLog")
+    }
+
+    func refreshLog() {
+        guard let session = manager?.connection as? NETunnelProviderSession,
+              session.status == .connected else { return }
+        do {
+            try session.sendProviderMessage(Data("logs".utf8)) { [weak self] data in
+                guard let data = data, let entry = String(data: data, encoding: .utf8),
+                      !entry.isEmpty else { return }
+                Task { @MainActor [weak self] in self?.appendDiagnostic(entry) }
+            }
+        } catch {
+            appendDiagnostic("Ошибка чтения логов: \(error.localizedDescription)")
+        }
+    }
+'''
+        text = text.replace(marker, marker + diagnostics, 1)
     path.write_text(text, encoding="utf-8")
     print("OK Mail.ru in VPNController:", path)
 
