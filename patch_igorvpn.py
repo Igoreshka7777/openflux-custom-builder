@@ -208,30 +208,42 @@ def enclosing_blocks(text: str, pos: int):
 
 
 def remove_system_vpn_block(text: str) -> str:
-    marker_pos = text.find('"System VPN (all traffic)"')
-    if marker_pos < 0:
-        marker_pos = text.find('"Start VPN"')
-    if marker_pos < 0:
-        print("INFO: System VPN block not found")
+    """
+    Полностью скрываем System VPN / Start VPN,
+    но оставляем валидный SwiftUI View, чтобы проект компилировался.
+    """
+
+    pattern = re.compile(
+        r'private\s+var\s+vpnSection\s*:\s*some\s+View\s*\{'
+    )
+
+    m = pattern.search(text)
+
+    if not m:
+        print("INFO: vpnSection не найден")
         return text
 
-    blocks = enclosing_blocks(text, marker_pos)
-    if not blocks:
-        print("WARNING: System VPN container not identified")
+    open_pos = text.find("{", m.start(), m.end())
+
+    if open_pos < 0:
+        print("WARNING: не найдена открывающая скобка vpnSection")
         return text
 
-    preferred = [b for b in blocks if b[0] in ("Section", "GroupBox")]
-    chosen = max(preferred, key=lambda x: x[1]) if preferred else min(blocks, key=lambda x: x[1])
+    close_pos = matching_brace(text, open_pos)
 
-    kind, start, _, close = chosen
-    end = close + 1
-    while end < len(text) and text[end] in " \t":
-        end += 1
-    if end < len(text) and text[end] == "\n":
-        end += 1
+    replacement = '''private var vpnSection: some View {
+        EmptyView()
+    }'''
 
-    print(f"Removed System VPN UI block: {kind}")
-    return text[:start] + text[end:]
+    text = (
+        text[:m.start()]
+        + replacement
+        + text[close_pos + 1:]
+    )
+
+    print("OK: System VPN / Start VPN скрыт через EmptyView()")
+
+    return text
 
 
 def add_support_state(text: str) -> str:
