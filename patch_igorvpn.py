@@ -401,7 +401,7 @@ struct SupportView: View {
 
 
 MAILRU_BYPASS_SWIFT = r'''
-    private static func resolveIPv4(_ host: String) -> [String] {
+    private static func resolveMailruIPv4(_ host: String) -> [String] {
         var hints = addrinfo(
             ai_flags: AI_ADDRCONFIG,
             ai_family: AF_INET,
@@ -465,7 +465,7 @@ MAILRU_BYPASS_SWIFT = r'''
         ]
 
         for host in mailHosts {
-            for ip in resolveIPv4(host) {
+            for ip in resolveMailruIPv4(host) {
                 routes.append(
                     NEIPv4Route(
                         destinationAddress: ip,
