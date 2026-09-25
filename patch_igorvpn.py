@@ -3303,7 +3303,7 @@ VPN_CONTROLS = '''private var controls: some View {
                     Button {
                         vpn.start(transport: "mailru", url: docURL,
                                   maxToken: "", maxUid: "",
-                                  directDomains: directDomains)
+                                  igorDirectDomainsText: igorDirectDomainsText)
                     } label: {
                         Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
                     }
@@ -3341,7 +3341,7 @@ VPN_HEADER = '''private var statusHeader: some View {
 
 VPN_LOG = '''private var logView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { showDirectDomains = true } label: {
+            Button { showIgorDirectDomains = true } label: {
                 Label("Прямые сайты", systemImage: "list.bullet")
             }
             .buttonStyle(.bordered)
@@ -3446,19 +3446,19 @@ def patch_content_view(path: Path) -> None:
     text = add_support_state(text)
     text = add_support_button_inside_content(text)
     text = add_support_sheet(text)
-    if 'showDirectDomains' not in text[:text.find('var body: some View')]:
+    if 'showIgorDirectDomains' not in text[:text.find('var body: some View')]:
         m = re.search(r'\bstruct\s+ContentView\s*:\s*View\s*\{', text)
         default = json.dumps(DEFAULT_DIRECT_DOMAINS, ensure_ascii=False)
-        text = (text[:m.end()] + '\n    @State private var showDirectDomains = false\n'
-                + f'    @AppStorage("directDomains") private var directDomains = {default}\n'
+        text = (text[:m.end()] + '\n    @State private var showIgorDirectDomains = false\n'
+                + f'    @AppStorage("igorDirectDomainsText") private var igorDirectDomainsText = {default}\n'
                 + text[m.end():])
-    if '.sheet(isPresented: $showDirectDomains)' not in text:
+    if '.sheet(isPresented: $showIgorDirectDomains)' not in text:
         marker = '.sheet(isPresented: $showIgorSupport) {\n            SupportView()\n        }'
         if marker not in text:
             fail("Не найдена поддержка для добавления редактора прямых сайтов")
         text = text.replace(marker, marker + '''
-        .sheet(isPresented: $showDirectDomains) {
-            DirectDomainsEditor(domains: $directDomains)
+        .sheet(isPresented: $showIgorDirectDomains) {
+            DirectDomainsEditor(domains: $igorDirectDomainsText)
         }''', 1)
 
     path.write_text(text, encoding="utf-8")
@@ -3696,16 +3696,20 @@ def patch_packet_tunnel(path: Path) -> None:
         text = text.replace("import Foundation", "import Foundation\nimport Darwin", 1)
 
     text = replace_bypass_routes(text)
-    if 'ipv4.excludedRoutes = Self.bypassRoutes(directDomains: directDomains)' not in text:
+    if 'ipv4.excludedRoutes = Self.bypassRoutes(directDomains: igorDirectDomains)' not in text:
         text = text.replace('ipv4.excludedRoutes = Self.bypassRoutes',
-                            'ipv4.excludedRoutes = Self.bypassRoutes(directDomains: directDomains)')
-    if 'Self.bypassRoutes(directDomains: directDomains)' not in text:
+                            'ipv4.excludedRoutes = Self.bypassRoutes(directDomains: igorDirectDomains)')
+    if 'Self.bypassRoutes(directDomains: igorDirectDomains)' not in text:
         fail("Не найдена строка excludedRoutes в PacketTunnelProvider.swift")
-    if 'let directDomains = (conf["directDomains"] as? String) ?? ""' not in text:
+    # The user's builder already has `directDomains` as [String]. Keep that
+    # separate from the new editable text list to avoid redeclaration.
+    text = re.sub(r'let\s+directDomains\s*=\s*\(conf\["directDomains"\]\s+as\?\s+String\)\s*\?\?\s*""',
+                  'let igorDirectDomains = (conf["igorDirectDomainsText"] as? String) ?? ""', text)
+    if 'let igorDirectDomains = (conf["igorDirectDomainsText"] as? String) ?? ""' not in text:
         marker = 'let url = (conf["url"] as? String) ?? ""'
         if marker not in text:
             fail("Не найден URL в конфигурации PacketTunnelProvider.swift")
-        text = text.replace(marker, marker + '\n        let directDomains = (conf["directDomains"] as? String) ?? ""', 1)
+        text = text.replace(marker, marker + '\n        let igorDirectDomains = (conf["igorDirectDomainsText"] as? String) ?? ""', 1)
 
     text = re.sub(
         r'let\s+transport\s*=\s*\(conf\["transport"\]\s+as\?\s+String\)\s*\?\?\s*"[^"]+"',
@@ -3761,17 +3765,27 @@ def force_mailru_in_vpn_controller(path: Path) -> None:
     text = "\n".join(lines) + ("\n" if old.endswith("\n") else "")
     text, signature_count = re.subn(
         r'func start\(transport: String, url: String, maxToken: String, maxUid: String\)',
-        'func start(transport: String, url: String, maxToken: String, maxUid: String, directDomains: String)',
+        'func start(transport: String, url: String, maxToken: String, maxUid: String, igorDirectDomainsText: String)',
         text,
     )
-    if signature_count != 1 and 'directDomains: String)' not in text:
+    if signature_count == 0:
+        # Migrate repositories already modified by an earlier revision.
+        text, signature_count = re.subn(
+            r'func start\(transport: String, url: String, maxToken: String, maxUid: String, directDomains: String\)',
+            'func start(transport: String, url: String, maxToken: String, maxUid: String, igorDirectDomainsText: String)',
+            text,
+        )
+    if signature_count != 1 and 'igorDirectDomainsText: String)' not in text:
         fail("Не найдена сигнатура VPNController.start для прямых сайтов")
     text, config_count = re.subn(
         r'("maxToken": maxToken, "maxUid": maxUid,)',
-        r'\1\n                "directDomains": directDomains,', text, count=1,
+        r'\1\n                "igorDirectDomainsText": igorDirectDomainsText,', text, count=1,
     )
-    if config_count != 1 and '"directDomains": directDomains' not in text:
+    if config_count != 1 and '"igorDirectDomainsText": igorDirectDomainsText' not in text:
         fail("Не найдена конфигурация VPNController для прямых сайтов")
+    # The previous patch revision used the same key as the builder's own
+    # [String] setting. Remove only that exact injected String entry.
+    text = re.sub(r'^[ \t]*"directDomains": directDomains,\n', '', text, flags=re.M)
     # Signing workflows may change the app identifier. Match the embedded
     # extension and never reuse some other VPN profile from iOS preferences.
     text = re.sub(r'private let extensionBundleId\s*=\s*"[^"]+"',
