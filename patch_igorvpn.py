@@ -208,42 +208,30 @@ def enclosing_blocks(text: str, pos: int):
 
 
 def remove_system_vpn_block(text: str) -> str:
-    """
-    Полностью скрываем System VPN / Start VPN,
-    но оставляем валидный SwiftUI View, чтобы проект компилировался.
-    """
-
-    pattern = re.compile(
-        r'private\s+var\s+vpnSection\s*:\s*some\s+View\s*\{'
-    )
-
-    m = pattern.search(text)
-
-    if not m:
-        print("INFO: vpnSection не найден")
+    marker_pos = text.find('"System VPN (all traffic)"')
+    if marker_pos < 0:
+        marker_pos = text.find('"Start VPN"')
+    if marker_pos < 0:
+        print("INFO: System VPN block not found")
         return text
 
-    open_pos = text.find("{", m.start(), m.end())
-
-    if open_pos < 0:
-        print("WARNING: не найдена открывающая скобка vpnSection")
+    blocks = enclosing_blocks(text, marker_pos)
+    if not blocks:
+        print("WARNING: System VPN container not identified")
         return text
 
-    close_pos = matching_brace(text, open_pos)
+    preferred = [b for b in blocks if b[0] in ("Section", "GroupBox")]
+    chosen = max(preferred, key=lambda x: x[1]) if preferred else min(blocks, key=lambda x: x[1])
 
-    replacement = '''private var vpnSection: some View {
-        EmptyView()
-    }'''
+    kind, start, _, close = chosen
+    end = close + 1
+    while end < len(text) and text[end] in " \t":
+        end += 1
+    if end < len(text) and text[end] == "\n":
+        end += 1
 
-    text = (
-        text[:m.start()]
-        + replacement
-        + text[close_pos + 1:]
-    )
-
-    print("OK: System VPN / Start VPN скрыт через EmptyView()")
-
-    return text
+    print(f"Removed System VPN UI block: {kind}")
+    return text[:start] + text[end:]
 
 
 def add_support_state(text: str) -> str:
@@ -310,6 +298,25 @@ __ORIGINAL__
 
 def patch_content_view(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
+
+    # The picker is hidden, so an old @AppStorage value must not select Yandex.
+    # Force the actual transport passed to TunnelController, not just its label.
+    text, count = re.subn(
+        r'TransportKind\(rawValue:\s*transportRaw\)\s*\?\?\s*\.yandex',
+        '.mailru', text,
+    )
+    if not count and not re.search(r'private var transport:\s*TransportKind\s*\{\s*\.mailru\s*\}', text):
+        fail("Не найден выбор транспорта в ContentView.swift")
+    text = re.sub(r'@AppStorage\("transportKind"\)\s+private var transportRaw:\s*String\s*=\s*TransportKind\.yandex\.rawValue',
+                  '@AppStorage("transportKind") private var transportRaw: String = TransportKind.mailru.rawValue', text)
+    text, count = re.subn(r'(case \.yandex:\s*return !docURL\.trimmingCharacters\(in: \.whitespaces\)\.isEmpty)',
+                          r'\1\n        case .mailru: return !docURL.trimmingCharacters(in: .whitespaces).isEmpty', text, count=1)
+    if count != 1 and 'case .mailru: return !docURL' not in text:
+        fail("Не найдена проверка URL в ContentView.swift")
+    text, count = re.subn(r'(case \.yandex:\s*\n\s*field\(title: "Yandex Docs URL",\s*\n\s*placeholder: "[^"]+",\s*\n\s*text: \$docURL\))',
+                          r'\1\n        case .mailru:\n            field(title: "ОБХОД БЕЛЫХ СПИСКОВ",\n                  placeholder: "https://cloud.mail.ru/public/...",\n                  text: $docURL)', text, count=1)
+    if count != 1 and 'case .mailru:' not in text:
+        fail("Не найдено поле URL в ContentView.swift")
 
     # Убираем круглую кнопку "О приложении" справа сверху.
     text = remove_about_button(text)
@@ -609,6 +616,41 @@ def force_mailru_in_vpn_controller(path: Path) -> None:
     print("OK Mail.ru in VPNController:", path)
 
 
+def patch_tunnel_controller(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if 'case mailru = "mailru"' not in text:
+        text, count = re.subn(r'(case yandex\s*=\s*"yandex")',
+                              r'\1\n    case mailru = "mailru"', text, count=1)
+        if count != 1:
+            fail("Не найден enum TransportKind в TunnelController.swift")
+    if 'case .mailru: return "Mail.ru Docs"' not in text:
+        text, count = re.subn(r'(case \.yandex:\s*return "Yandex Docs")',
+                              r'\1\n        case .mailru: return "Mail.ru Docs"', text, count=1)
+        if count != 1:
+            fail("Не найден title транспорта в TunnelController.swift")
+    path.write_text(text, encoding="utf-8")
+    print("OK Mail.ru enum:", path)
+
+
+def patch_go_ios_bridge(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if '"openflux/transport/mailru"' not in text:
+        text, count = re.subn(r'("openflux/transport"\s*\n)',
+                              r'\1\t"openflux/transport/mailru"\n', text, count=1)
+        if count != 1:
+            fail(f"Не найден импорт transport в {path}")
+    if 'case "mailru":' not in text:
+        text, count = re.subn(
+            r'(case "yandex", "":\s*\n\s*t = transport.NewCompressedTransport\(yandex.NewYandexDocsTransport\(docURL, config\)\))',
+            r'\1\n\tcase "mailru":\n\t\tt = transport.NewCompressedTransport(mailru.NewMailruDocsTransport(docURL, config))',
+            text, count=1,
+        )
+        if count != 1:
+            fail(f"Не найден switch yandex в {path}")
+    path.write_text(text, encoding="utf-8")
+    print("OK Mail.ru Go bridge:", path)
+
+
 def patch_display_name(root: Path) -> None:
     project = root / "ios-app/project.yml"
     if not project.exists():
@@ -718,6 +760,9 @@ def apply_icon(root: Path) -> None:
 def main() -> None:
     root = find_root()
 
+    patch_tunnel_controller(root / "ios-app/OpenFlux/TunnelController.swift")
+    patch_go_ios_bridge(root / "export_ios.go")
+    patch_go_ios_bridge(root / "export_ios_packet.go")
     patch_content_view(root / "ios-app/OpenFlux/ContentView.swift")
     create_support_view(root / "ios-app/OpenFlux")
     force_mailru_in_vpn_controller(root / "ios-app/OpenFlux/VPNController.swift")
