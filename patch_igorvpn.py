@@ -3777,10 +3777,12 @@ def force_mailru_in_vpn_controller(path: Path) -> None:
         )
     if signature_count != 1 and 'igorDirectDomainsText: String)' not in text:
         fail("Не найдена сигнатура VPNController.start для прямых сайтов")
-    text, config_count = re.subn(
-        r'("maxToken": maxToken, "maxUid": maxUid,)',
-        r'\1\n                "igorDirectDomainsText": igorDirectDomainsText,', text, count=1,
-    )
+    config_count = 0
+    if '"igorDirectDomainsText": igorDirectDomainsText' not in text:
+        text, config_count = re.subn(
+            r'("maxToken": maxToken, "maxUid": maxUid,)',
+            r'\1\n                "igorDirectDomainsText": igorDirectDomainsText,', text, count=1,
+        )
     if config_count != 1 and '"igorDirectDomainsText": igorDirectDomainsText' not in text:
         fail("Не найдена конфигурация VPNController для прямых сайтов")
     # The previous patch revision used the same key as the builder's own
@@ -3791,10 +3793,46 @@ def force_mailru_in_vpn_controller(path: Path) -> None:
     text = re.sub(r'private let extensionBundleId\s*=\s*"[^"]+"',
                   'private let extensionBundleId = (Bundle.main.bundleIdentifier ?? "") + ".tunnel"',
                   text)
-    text = text.replace('manager = managers.first',
-                        'manager = managers.first { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == extensionBundleId }')
+    if 'manager = managers.first {' not in text:
+        text = text.replace('manager = managers.first',
+                            'manager = managers.first { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == extensionBundleId }')
     text = text.replace('m.localizedDescription = "OpenFlux"',
                         'm.localizedDescription = "Igor VPN"')
+    # Let iOS reconnect the packet tunnel even while the app is suspended.
+    if 'm.onDemandRules = [NEOnDemandRuleConnect()]' not in text:
+        text, count = re.subn(
+            r'(?m)^([ \t]*)m\.isEnabled = true$',
+            r'\1m.onDemandRules = [NEOnDemandRuleConnect()]\n\1m.isOnDemandEnabled = true\n\1m.isEnabled = true',
+            text, count=1,
+        )
+        if count != 1:
+            fail("Не найдена настройка VPN для автоматического переподключения")
+    # On-demand may already have started the tunnel after saving the profile.
+    if 'if m.connection.status == .disconnected {' not in text:
+        text = text.replace('try m.connection.startVPNTunnel()',
+                            'if m.connection.status == .disconnected {\n                    try m.connection.startVPNTunnel()\n                }', 1)
+    # A manual Stop must disable on-demand before stopping the connection.
+    old_stop = '''func stop() {
+        manager?.connection.stopVPNTunnel()
+    }'''
+    new_stop = '''func stop() {
+        Task {
+            guard let m = manager else { return }
+            m.isOnDemandEnabled = false
+            do {
+                try await m.saveToPreferences()
+                try await m.loadFromPreferences()
+                m.connection.stopVPNTunnel()
+                refreshStatus()
+            } catch {
+                status = "Error: \\(error.localizedDescription)"
+            }
+        }
+    }'''
+    if old_stop in text:
+        text = text.replace(old_stop, new_stop, 1)
+    elif 'm.isOnDemandEnabled = false' not in text:
+        fail("Не найден VPNController.stop для ручного отключения")
     path.write_text(text, encoding="utf-8")
     print("OK Mail.ru in VPNController:", path)
 
