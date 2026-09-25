@@ -906,6 +906,13 @@ def patch_packet_tunnel(path: Path) -> None:
         marker = 'ipv4.excludedRoutes = Self.bypassRoutes(directDomains: igorDirectDomains)'
         text = text.replace(marker, marker + '\n        routeSummary = "Прямых IP-маршрутов: \\(ipv4.excludedRoutes?.count ?? 0)"', 1)
 
+    # Custom builder revisions may append the route array to the diagnostic
+    # String. Keep the routes themselves; remove only the invalid String sum.
+    text = re.sub(
+        r'(?m)^([ \t]*routeSummary[ \t]*=[ \t]*"[^"\n]*")[ \t]*\+[ \t]*directRoutes\b',
+        r'\1', text,
+    )
+
     path.write_text(text, encoding="utf-8")
     print("OK PacketTunnelProvider:", path)
 
