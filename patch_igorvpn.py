@@ -3461,6 +3461,10 @@ def patch_content_view(path: Path) -> None:
             DirectDomainsEditor(domains: $igorDirectDomainsText)
         }''', 1)
 
+    # Custom builders may already have a DirectDomainsEditor call with an
+    # older `text:` label. The generated editor uses `domains:`.
+    text = re.sub(r'DirectDomainsEditor\(text\s*:', 'DirectDomainsEditor(domains:', text)
+
     path.write_text(text, encoding="utf-8")
     print("OK ContentView:", path)
 
@@ -3650,6 +3654,10 @@ MAILRU_BYPASS_SWIFT = r'''
 
 
 def replace_bypass_routes(text: str) -> str:
+    if ("private final class RouteAddresses" in text
+            and "static func bypassRoutes(directDomains: String)" in text
+            and "private static func resolveMailruIPv4" in text):
+        return text
     # Avoid duplicating the route collector if this section is patched again.
     collector = text.find("private final class RouteAddresses")
     if collector >= 0:
@@ -3722,6 +3730,22 @@ def patch_packet_tunnel(path: Path) -> None:
         "Exclude the transport's own backend (Yandex ranges)",
         "Exclude the transport's own Mail.ru backend"
     )
+
+    # The Network Extension receives the real iOS stop reason even when the
+    # containing app is suspended. Preserve it in the device system log.
+    if '[Igor VPN] tunnel stopped by iOS, reason=' not in text:
+        marker = 'OpenFluxStopPacketTunnel()'
+        if marker not in text:
+            fail("Не найден stopTunnel для записи причины отключения")
+        text = text.replace(marker,
+                            'NSLog("[Igor VPN] tunnel stopped by iOS, reason=\\(reason.rawValue)")\n        ' + marker,
+                            1)
+    if '[Igor VPN] tunnel start failed, code=' not in text:
+        marker = 'if rc != 0 {\n'
+        if marker not in text:
+            fail("Не найдена проверка ошибки запуска PacketTunnelProvider")
+        text = text.replace(marker, marker +
+                            '                NSLog("[Igor VPN] tunnel start failed, code=\\(rc)")\n', 1)
 
     path.write_text(text, encoding="utf-8")
     print("OK PacketTunnelProvider:", path)
