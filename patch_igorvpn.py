@@ -3303,7 +3303,7 @@ VPN_CONTROLS = '''private var controls: some View {
                     Button {
                         vpn.start(transport: "mailru", url: docURL,
                                   maxToken: "", maxUid: "",
-                                  igorDirectDomainsText: igorDirectDomainsText)
+                                  igorDirectDomainsText: directDomains)
                     } label: {
                         Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
                     }
@@ -3341,10 +3341,6 @@ VPN_HEADER = '''private var statusHeader: some View {
 
 VPN_LOG = '''private var logView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button { showIgorDirectDomains = true } label: {
-                Label("Прямые сайты", systemImage: "list.bullet")
-            }
-            .buttonStyle(.bordered)
             Text("VPN: \\(vpn.status)")
                 .font(.footnote).textSelection(.enabled)
         }
@@ -3446,24 +3442,21 @@ def patch_content_view(path: Path) -> None:
     text = add_support_state(text)
     text = add_support_button_inside_content(text)
     text = add_support_sheet(text)
-    if 'showIgorDirectDomains' not in text[:text.find('var body: some View')]:
-        m = re.search(r'\bstruct\s+ContentView\s*:\s*View\s*\{', text)
-        default = json.dumps(DEFAULT_DIRECT_DOMAINS, ensure_ascii=False)
-        text = (text[:m.end()] + '\n    @State private var showIgorDirectDomains = false\n'
-                + f'    @AppStorage("igorDirectDomainsText") private var igorDirectDomainsText = {default}\n'
-                + text[m.end():])
-    if '.sheet(isPresented: $showIgorDirectDomains)' not in text:
-        marker = '.sheet(isPresented: $showIgorSupport) {\n            SupportView()\n        }'
-        if marker not in text:
-            fail("Не найдена поддержка для добавления редактора прямых сайтов")
-        text = text.replace(marker, marker + '''
-        .sheet(isPresented: $showIgorDirectDomains) {
-            DirectDomainsEditor(domains: $igorDirectDomainsText)
-        }''', 1)
-
-    # Custom builders may already have a DirectDomainsEditor call with an
-    # older `text:` label. The generated editor uses `domains:`.
-    text = re.sub(r'DirectDomainsEditor\(text\s*:', 'DirectDomainsEditor(domains:', text)
+    # The top-right branch button and its editor use the "directDomains"
+    # setting. Populate that setting, which is also passed to the VPN.
+    if 'showDirectDomainsEditor = true' not in text or 'DirectDomainsEditor(text: $directDomains)' not in text:
+        fail("Не найдена существующая верхняя кнопка «Прямые сайты»; сначала примените patch_openflux-fixed.py")
+    default = json.dumps(DEFAULT_DIRECT_DOMAINS, ensure_ascii=False)
+    text, default_count = re.subn(
+        r'(@AppStorage\("directDomains"\)\s+private\s+var\s+directDomains\s*:\s*String\s*=\s*)""',
+        lambda m: m.group(1) + default, text, count=1,
+    )
+    if not default_count and '@AppStorage("directDomains") private var directDomains: String = ' not in text:
+        fail("Не найдено хранение списка верхней кнопки")
+    # Clean up copies already modified by the earlier Igor script.
+    text = re.sub(r'(?m)^\s*@State private var showIgorDirectDomains = false\n', '', text)
+    text = re.sub(r'(?m)^\s*@AppStorage\("igorDirectDomainsText"\) private var igorDirectDomainsText = .*\n', '', text)
+    text = re.sub(r'\s*\.sheet\(isPresented: \$showIgorDirectDomains\) \{\s*DirectDomainsEditor\(domains: \$igorDirectDomainsText\)\s*\}', '', text)
 
     path.write_text(text, encoding="utf-8")
     print("OK ContentView:", path)
@@ -3517,6 +3510,9 @@ def create_support_qr(app_dir: Path) -> None:
 
 def create_direct_domains_editor(app_dir: Path) -> None:
     editor = app_dir / "DirectDomainsEditor.swift"
+    if editor.exists():
+        print("OK: существующий редактор прямых сайтов сохранён:", editor)
+        return
     editor.write_text('''import SwiftUI
 
 struct DirectDomainsEditor: View {
@@ -4024,7 +4020,7 @@ def main() -> None:
     print("- Mail.ru transport")
     print("- Mail.ru bypass")
     print("- Start запускает системный VPN, Stop останавливает его")
-    print("- верхняя кнопка О приложении удалена")
+    print("- список прямых сайтов открывается существующей верхней кнопкой")
     print("- Поддержать: два сердечка и QR фото без кошелька")
     print("- app-icon.png применяется автоматически")
 
