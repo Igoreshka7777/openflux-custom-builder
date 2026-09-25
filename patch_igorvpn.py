@@ -307,6 +307,93 @@ __ORIGINAL__
     return text[:body_open + 1] + replacement + text[body_close:]
 
 
+def replace_swift_property(text: str, name: str, replacement: str) -> str:
+    m = re.search(r'\bprivate\s+var\s+' + re.escape(name) +
+                  r'\s*:\s*some\s+View\s*\{', text)
+    if not m:
+        fail(f"Не найден блок {name} в ContentView.swift")
+    close = matching_brace(text, text.find('{', m.start(), m.end()))
+    return text[:m.start()] + replacement + text[close + 1:]
+
+
+VPN_CONTROLS = '''private var controls: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                if vpn.active {
+                    Button(role: .destructive) { vpn.stop() } label: {
+                        Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button {
+                        vpn.start(transport: "mailru", url: docURL,
+                                  maxToken: "", maxUid: "")
+                    } label: {
+                        Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canStart)
+                }
+                Button { testSystemVPN() } label: {
+                    Label("Test", systemImage: "network").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(vpn.status != "Connected")
+            }
+            if !vpnTestResult.isEmpty {
+                Text(vpnTestResult).font(.footnote).textSelection(.enabled)
+            }
+            if vpn.status.hasPrefix("Error:") {
+                Text(vpn.status).font(.footnote).foregroundColor(.red)
+            }
+        }
+    }'''
+
+
+VPN_HEADER = '''private var statusHeader: some View {
+        HStack {
+            Circle()
+                .fill(vpn.status == "Connected" ? Color.green : (vpn.active ? Color.orange : Color.gray))
+                .frame(width: 12, height: 12)
+            Text(vpn.status == "Connected" ? "Connected" :
+                 (vpn.active ? "Connecting…" : "Stopped"))
+                .font(.headline)
+            Spacer()
+        }
+    }'''
+
+
+VPN_LOG = '''private var logView: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("VPN: \\(vpn.status)")
+                .font(.footnote).textSelection(.enabled)
+        }
+    }'''
+
+
+VPN_TEST = '''
+    private func testSystemVPN() {
+        vpnTestResult = "Проверка IP…"
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 20
+        // No proxy: this request follows the iPhone's system route.
+        let session = URLSession(configuration: configuration)
+        guard let url = URL(string: "https://api.ipify.org") else { return }
+        session.dataTask(with: url) { data, _, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    vpnTestResult = "Ошибка: \\(error.localizedDescription)"
+                } else if let data = data, let ip = String(data: data, encoding: .utf8) {
+                    vpnTestResult = "Внешний IP: \\(ip.trimmingCharacters(in: .whitespacesAndNewlines))"
+                } else {
+                    vpnTestResult = "Нет ответа от сервера проверки"
+                }
+            }
+        }.resume()
+    }
+'''
+
+
 def patch_content_view(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
 
@@ -357,6 +444,25 @@ def patch_content_view(path: Path) -> None:
 
     text = remove_system_vpn_block(text)
     text = remove_system_vpn_property(text)
+    text = text.replace('.disabled(tunnel.running)', '.disabled(vpn.active)')
+    text = re.sub(r'^\s*@StateObject\s+private\s+var\s+tunnel\s*=\s*TunnelController\(\)\s*\n', '\n', text, flags=re.M)
+    # The visible Start button controls the actual iOS packet tunnel.
+    text = replace_swift_property(text, "controls", VPN_CONTROLS)
+    text = replace_swift_property(text, "statusHeader", VPN_HEADER)
+    text = replace_swift_property(text, "logView", VPN_LOG)
+    if re.search(r'\bprivate\s+var\s+portField\s*:\s*some\s+View\s*\{', text):
+        text = replace_swift_property(text, "portField", '')
+    text = re.sub(r'^\s*portField\s*\n', '', text, flags=re.M)
+    if 'private func testSystemVPN()' not in text:
+        m = re.search(r'\bprivate\s+func\s+field\(', text)
+        if not m:
+            fail("Не найдена точка вставки проверки VPN в ContentView.swift")
+        text = text[:m.start()] + VPN_TEST + '\n    ' + text[m.start():]
+    if '@State private var vpnTestResult' not in text:
+        m = re.search(r'\bstruct\s+ContentView\s*:\s*View\s*\{', text)
+        text = text[:m.end()] + '\n    @State private var vpnTestResult = ""\n' + text[m.end():]
+    text = re.sub(r'guard \(Int\(socksPort\) \?\? 0\) > 0 else \{ return false \}',
+                  '', text)
     text = add_support_state(text)
     text = add_support_button_inside_content(text)
     text = add_support_sheet(text)
@@ -626,6 +732,15 @@ def force_mailru_in_vpn_controller(path: Path) -> None:
         lines.append(line)
 
     text = "\n".join(lines) + ("\n" if old.endswith("\n") else "")
+    # Signing workflows may change the app identifier. Match the embedded
+    # extension and never reuse some other VPN profile from iOS preferences.
+    text = re.sub(r'private let extensionBundleId\s*=\s*"[^"]+"',
+                  'private let extensionBundleId = (Bundle.main.bundleIdentifier ?? "") + ".tunnel"',
+                  text)
+    text = text.replace('manager = managers.first',
+                        'manager = managers.first { ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == extensionBundleId }')
+    text = text.replace('m.localizedDescription = "OpenFlux"',
+                        'm.localizedDescription = "Igor VPN"')
     path.write_text(text, encoding="utf-8")
     print("OK Mail.ru in VPNController:", path)
 
@@ -790,7 +905,7 @@ def main() -> None:
     print("- ОБХОД БЕЛЫХ СПИСКОВ")
     print("- Mail.ru transport")
     print("- Mail.ru bypass")
-    print("- System VPN / Start VPN удалены из интерфейса")
+    print("- Start запускает системный VPN, Stop останавливает его")
     print("- верхняя кнопка О приложении удалена")
     print("- Поддержать находится внутри экрана")
     print("- USDT TON:", WALLET)
